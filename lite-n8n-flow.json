@@ -1,0 +1,170 @@
+{
+  "name": "lite-n8n-flow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            },
+            {}
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -976,
+        -64
+      ],
+      "id": "c11e8e95-94f6-45f2-9665-ddb9a33006ca",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "toRecipients": "s.farahani@tosanltd.com",
+        "subject": "={{ $json.text ? \"گزارش خطاهای زیرساختی\" : \"Report\" }}",
+        "bodyContent": "={{ $json.text }}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        -64
+      ],
+      "id": "0320b554-827a-4ea8-98f4-f626bd32d806",
+      "name": "Send a message",
+      "webhookId": "386a00a6-be33-4daa-a4d7-e80039ee3ae9"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.7.153:30015/operationlog-core-deposit-dev-2026-08-18/_search",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "{   \"size\": 0,   \"query\": {     \"term\": {       \"level\": \"ERROR\"     }   },   \"aggs\": {     \"error_messages\": {       \"terms\": {         \"field\": \"message.keyword\",         \"size\": 20       }     }   } }",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -624,
+        -64
+      ],
+      "id": "5fefedda-a24c-4e4f-a3f8-da0142e124e9",
+      "name": "Check Elastisearch"
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst errorTypes = response.aggregations?.error_types?.buckets || {};\n\nconst data = {\n  '5xx': errorTypes['5xx']?.doc_count || 0,\n  'connection_refused': errorTypes['connection_refused']?.doc_count || 0,\n  'database': errorTypes['database']?.doc_count || 0,\n  'timeout': errorTypes['timeout']?.doc_count || 0\n};\n\nconst total = Object.values(data).reduce((sum, count) => sum + count, 0);\n\n// ساخت پیام برای ارسال\nlet message = '*گزارش خطاهای زیرساختی - ۱۰ دقیقه اخیر*\\n\\n';\nmessage += `*مجموع کل خطاها:* ${total.toLocaleString()}\\n\\n`;\nmessage += ' تفکیک خطاها:*\\n';\nmessage += `  • خطاهای 5xx (سرور): ${data['5xx'].toLocaleString()}\\n`;\nmessage += `  •  خطاهای اتصال (Connection Refused): ${data['connection_refused'].toLocaleString()}\\n`;\nmessage += `  •  خطاهای دیتابیس: ${data['database'].toLocaleString()}\\n`;\nmessage += `  •  خطاهای تایم‌اوت: ${data['timeout'].toLocaleString()}\\n\\n`;\n\n// اضافه کردن خطای غالب\nreturn {\n  json: {\n    text: message,\n    // برای ارسال به ایمیل\n    mail_message: {\n      blocks: [\n        {\n          type: 'section',\n          text: {\n            type: 'mrkdwn',\n            text: message\n          }\n        }\n      ]\n    },\n    // داده‌های عددی برای پردازش بیشتر\n    metrics: data,\n    total: total\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -336,
+        -64
+      ],
+      "id": "df540459-d373-4dc2-acef-3d280f164514",
+      "name": "Server side errors"
+    }
+  ],
+  "pinData": {
+    "Check Elastisearch": [
+      {
+        "json": {
+          "took": 6680,
+          "timed_out": false,
+          "_shards": {
+            "total": 533,
+            "successful": 533,
+            "skipped": 122,
+            "failed": 0
+          },
+          "hits": {
+            "total": {
+              "value": 10000,
+              "relation": "gte"
+            },
+            "max_score": null,
+            "hits": []
+          },
+          "aggregations": {
+            "error_types": {
+              "buckets": {
+                "5xx": {
+                  "doc_count": 3
+                },
+                "connection_refused": {
+                  "doc_count": 194237
+                },
+                "database": {
+                  "doc_count": 1743
+                },
+                "timeout": {
+                  "doc_count": 3061
+                }
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check Elastisearch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        []
+      ]
+    },
+    "Check Elastisearch": {
+      "main": [
+        [
+          {
+            "node": "Server side errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Server side errors": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "07e17aa8-d32d-4c43-b3aa-e4cfcb07fa78",
+  "meta": {
+    "instanceId": "d33824797c2d2abd86aa5528de5f08cb0c8746bc72b997241523e7ca4b12b1fc"
+  },
+  "nodeGroups": [],
+  "id": "29ZQefjFBYghVju5",
+  "tags": []
+}
