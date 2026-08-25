@@ -16,24 +16,24 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.3,
       "position": [
-        -976,
-        -64
+        -1296,
+        -112
       ],
       "id": "c11e8e95-94f6-45f2-9665-ddb9a33006ca",
       "name": "Schedule Trigger"
     },
     {
       "parameters": {
-        "toRecipients": "s.farahani@tosanltd.com",
-        "subject": "={{ $json.text ? \"گزارش خطاهای زیرساختی\" : \"Report\" }}",
+        "toRecipients": "{{ $json.to }}",
+        "subject": "={{ $json.subject }}",
         "bodyContent": "={{ $json.text }}",
         "additionalFields": {}
       },
       "type": "n8n-nodes-base.microsoftOutlook",
       "typeVersion": 2,
       "position": [
-        -48,
-        -64
+        -32,
+        -96
       ],
       "id": "0320b554-827a-4ea8-98f4-f626bd32d806",
       "name": "Send a message",
@@ -46,42 +46,68 @@
         "sendBody": true,
         "contentType": "raw",
         "rawContentType": "application/json",
-        "body": "{   \"size\": 0,   \"query\": {     \"term\": {       \"level\": \"ERROR\"     }   },   \"aggs\": {     \"error_messages\": {       \"terms\": {         \"field\": \"message.keyword\",         \"size\": 20       }     }   } }",
+        "body": "POST /*/_search {   \"size\": 0,   \"query\": {     \"bool\": {       \"filter\": [         {           \"range\": {             \"@timestamp\": {               \"gte\": \"now-10m\",               \"lte\": \"now\"             }           }         }       ],       \"should\": [         {           \"range\": {             \"status\": {               \"gte\": 500,               \"lte\": 599             }           }         },         {           \"match\": {             \"message\": \"Connection refused\"           }         },         {           \"match\": {             \"message\": \"timeout\"           }         },         {           \"match\": {             \"message\": \"database\"           }         }       ],       \"minimum_should_match\": 1     }   },   \"aggs\": {     \"by_index\": {       \"terms\": {         \"field\": \"_index\",         \"size\": 100,         \"order\": {           \"_count\": \"desc\"         }       },       \"aggs\": {         \"error_categories\": {           \"filters\": {             \"filters\": {               \"5xx\": {                 \"range\": {                   \"status\": {                     \"gte\": 500,                     \"lte\": 599                   }                 }               },               \"connection_refused\": {                 \"match\": {                   \"message\": \"Connection refused\"                 }               },               \"database\": {                 \"match\": {                   \"message\": \"database\"                 }               },               \"timeout\": {                 \"match\": {                   \"message\": \"timeout\"                 }               }             }           }         }       }     },     \"total_by_type\": {       \"filters\": {         \"filters\": {           \"5xx\": {             \"range\": {               \"status\": {                 \"gte\": 500,                 \"lte\": 599               }             }           },           \"connection_refused\": {             \"match\": {               \"message\": \"Connection refused\"             }           },           \"database\": {             \"match\": {               \"message\": \"database\"             }           },           \"timeout\": {             \"match\": {               \"message\": \"timeout\"             }           }         }       }     }   } }",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
       "position": [
-        -624,
-        -64
+        -992,
+        -112
       ],
       "id": "5fefedda-a24c-4e4f-a3f8-da0142e124e9",
       "name": "Check Elastisearch"
     },
     {
       "parameters": {
-        "jsCode": "const response = $input.first().json;\nconst errorTypes = response.aggregations?.error_types?.buckets || {};\n\nconst data = {\n  '5xx': errorTypes['5xx']?.doc_count || 0,\n  'connection_refused': errorTypes['connection_refused']?.doc_count || 0,\n  'database': errorTypes['database']?.doc_count || 0,\n  'timeout': errorTypes['timeout']?.doc_count || 0\n};\n\nconst total = Object.values(data).reduce((sum, count) => sum + count, 0);\n\n// ساخت پیام برای ارسال\nlet message = '*گزارش خطاهای زیرساختی - ۱۰ دقیقه اخیر*\\n\\n';\nmessage += `*مجموع کل خطاها:* ${total.toLocaleString()}\\n\\n`;\nmessage += ' تفکیک خطاها:*\\n';\nmessage += `  • خطاهای 5xx (سرور): ${data['5xx'].toLocaleString()}\\n`;\nmessage += `  •  خطاهای اتصال (Connection Refused): ${data['connection_refused'].toLocaleString()}\\n`;\nmessage += `  •  خطاهای دیتابیس: ${data['database'].toLocaleString()}\\n`;\nmessage += `  •  خطاهای تایم‌اوت: ${data['timeout'].toLocaleString()}\\n\\n`;\n\n// اضافه کردن خطای غالب\nreturn {\n  json: {\n    text: message,\n    // برای ارسال به ایمیل\n    mail_message: {\n      blocks: [\n        {\n          type: 'section',\n          text: {\n            type: 'mrkdwn',\n            text: message\n          }\n        }\n      ]\n    },\n    // داده‌های عددی برای پردازش بیشتر\n    metrics: data,\n    total: total\n  }\n};"
+        "jsCode": "// دریافت داده از نود قبلی\nconst response = $input.first().json;\n\n// استخراج تفکیک بر اساس ایندکس\nconst byIndex = response?.aggregations?.by_index?.buckets || [];\n\n// استخراج مجموع کلی بر اساس نوع خطا\nconst totalByType = response?.aggregations?.total_by_type?.buckets || {};\n\n// پردازش هر ایندکس\nconst indexResults = [];\nfor (const bucket of byIndex) {\n    const indexName = bucket.key || 'unknown';\n    const totalCount = bucket.doc_count || 0;\n    \n    // استخراج تفکیک خطاها در این ایندکس\n    const categories = bucket?.error_categories?.buckets || {};\n    \n    const indexData = {\n        index: indexName,\n        total_errors: totalCount,\n        errors: {\n            '5xx': categories['5xx']?.doc_count || 0,\n            'connection_refused': categories['connection_refused']?.doc_count || 0,\n            'database': categories['database']?.doc_count || 0,\n            'timeout': categories['timeout']?.doc_count || 0\n        }\n    };\n    \n    // استخراج نام اپلیکیشن از ایندکس\n    // مثال: operationlog-card-kms-4052-2026-08-24 -> card-kms\n    const parts = indexName.split('-');\n    let appName;\n    if (parts.length >= 3) {\n        appName = parts.slice(1, 3).join('-'); // card-kms\n    } else {\n        appName = indexName;\n    }\n    \n    indexData.app_name = appName;\n    indexResults.push(indexData);\n}\n\n// محاسبه مجموع کلی\nconst totalByTypeResult = {\n    '5xx': totalByType['5xx']?.doc_count || 0,\n    'connection_refused': totalByType['connection_refused']?.doc_count || 0,\n    'database': totalByType['database']?.doc_count || 0,\n    'timeout': totalByType['timeout']?.doc_count || 0\n};\nconst totalErrors = Object.values(totalByTypeResult).reduce((sum, val) => sum + val, 0);\n\n// تنظیم زمان ایران در JavaScript\nconst now = new Date();\n// برای تنظیم منطقه زمانی ایران، میتونیم از toLocaleString استفاده کنیم\nconst options = { \n    timeZone: 'Asia/Tehran',\n    year: 'numeric',\n    month: '2-digit',\n    day: '2-digit',\n    hour: '2-digit',\n    minute: '2-digit',\n    second: '2-digit',\n    hour12: false\n};\nconst formattedDate = now.toLocaleString('fa-IR', options);\n// تبدیل به فرمت ISO برای ذخیره\nconst isoDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Tehran' })).toISOString();\n\n// ساخت گزارش متنی\nlet textReport = ` گزارش خطاهای زیرساختی - ۱۰ دقیقه اخیر\n زمان: ${formattedDate} (ایران)\n\n مجموع کل خطاها: ${totalErrors.toLocaleString()}\n\n تفکیک کلی بر اساس نوع خطا:\n  • 5xx (سرور): ${totalByTypeResult['5xx'].toLocaleString()}\n  • Connection Refused: ${totalByTypeResult['connection_refused'].toLocaleString()}\n  • Database: ${totalByTypeResult['database'].toLocaleString()}\n  • Timeout: ${totalByTypeResult['timeout'].toLocaleString()}\n\n${'='.repeat(60)}\n تفکیک بر اساس اپلیکیشن/سرویس:\n`;\n\n// اضافه کردن اطلاعات هر ایندکس\nfor (const item of indexResults) {\n    if (item.total_errors > 0) {\n        textReport += `\n${item.app_name} (${item.index})\n   مجموع: ${item.total_errors.toLocaleString()}\n   ├─ 5xx: ${item.errors['5xx'].toLocaleString()}\n   ├─ Connection Refused: ${item.errors['connection_refused'].toLocaleString()}\n   ├─ Database: ${item.errors['database'].toLocaleString()}\n   └─ Timeout: ${item.errors['timeout'].toLocaleString()}\n`;\n    }\n}\n\n// بازگشت خروجی برای n8n\nreturn [\n    {\n        json: {\n            // خلاصه کلی\n            summary: {\n                total_errors: totalErrors,\n                time_range: 'last_10_minutes',\n                timestamp: isoDate,\n                by_type: totalByTypeResult\n            },\n            // تفکیک بر اساس ایندکس\n            by_index: indexResults,\n            // گزارش‌های متنی برای ایمیل\n            text_report: textReport,\n            // داده‌های خام برای پردازش بیشتر\n            raw: {\n                total_hits: response?.hits?.total?.value || 0,\n                took_ms: response?.took || 0\n            }\n        }\n    }\n];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -336,
-        -64
+        -720,
+        -112
       ],
       "id": "df540459-d373-4dc2-acef-3d280f164514",
-      "name": "Server side errors"
+      "name": "classify server errors by service"
+    },
+    {
+      "parameters": {
+        "jsCode": "// دریافت لیست ایندکس‌ها\nconst byIndex = $input.first().json.by_index || [];\n\nconst teamEmails = {\n    'card-kms': 'team-card@company.com',\n    'chakavak': 'team-chakavak@company.com',\n    'core-deposit': 'team-core@company.com',\n    'modern-cm': 'team-cm@company.com',\n    'modern-netway': 'team-netway@company.com',\n    'pol-cutoff': 'team-pol@company.com',\n};\n\n// گروه‌بندی ایمیل‌ها بر اساس تیم\nconst emailGroups = {};\nfor (const item of byIndex) {\n    if (item.total_errors > 0) {\n        const appName = item.app_name;\n        const teamEmail = teamEmails[appName] || 'default-team@company.com';\n        \n        if (!emailGroups[teamEmail]) {\n            emailGroups[teamEmail] = {\n                to: teamEmail,\n                services: [],\n                total_errors: 0\n            };\n        }\n        \n        emailGroups[teamEmail].services.push({\n            app_name: appName,\n            index: item.index,\n            errors: item.errors,\n            total_errors: item.total_errors\n        });\n        emailGroups[teamEmail].total_errors += item.total_errors;\n    }\n}\n\n// ساخت ایمیل برای هر گروه\nconst emailsToSend = [];\nfor (const [teamEmail, group] of Object.entries(emailGroups)) {\n    let emailContent = ` گزارش خلاصه خطاهای تیم\\n\\n`;\n    emailContent += `مجموع کل خطاها: ${group.total_errors.toLocaleString()}\\n\\n`;\n    emailContent += `سرویس‌های دارای خطا:\\n`;\n    \n    for (const service of group.services) {\n        emailContent += `\n${service.app_name} (${service.index})\n   مجموع: ${service.total_errors.toLocaleString()}\n   ├─ 5xx: ${service.errors['5xx'].toLocaleString()}\n   ├─ Connection Refused: ${service.errors['connection_refused'].toLocaleString()}\n   ├─ Database: ${service.errors['database'].toLocaleString()}\n   └─ Timeout: ${service.errors['timeout'].toLocaleString()}\n`;\n    }\n    \n    emailsToSend.push({\n        to: teamEmail,\n        subject: `گزارش خلاصه خطاهای تیم شما`,\n        text: emailContent,\n        total_errors: group.total_errors,\n        service_count: group.services.length\n    });\n}\n\nreturn emailsToSend;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        -112
+      ],
+      "id": "6a1ab773-656b-478d-8f1c-cf9e9a8b4d92",
+      "name": "Prepare emails"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -256,
+        -112
+      ],
+      "id": "68592b7f-e7aa-4aff-814d-3d36360c4c43",
+      "name": "Loop Over emails"
     }
   ],
   "pinData": {
     "Check Elastisearch": [
       {
         "json": {
-          "took": 6680,
+          "took": 4436,
           "timed_out": false,
           "_shards": {
-            "total": 533,
-            "successful": 533,
-            "skipped": 122,
+            "total": 545,
+            "successful": 545,
+            "skipped": 136,
             "failed": 0
           },
           "hits": {
@@ -93,21 +119,2027 @@
             "hits": []
           },
           "aggregations": {
-            "error_types": {
+            "total_by_type": {
               "buckets": {
                 "5xx": {
-                  "doc_count": 3
+                  "doc_count": 2
                 },
                 "connection_refused": {
-                  "doc_count": 194237
+                  "doc_count": 156901
                 },
                 "database": {
-                  "doc_count": 1743
+                  "doc_count": 4850
                 },
                 "timeout": {
-                  "doc_count": 3061
+                  "doc_count": 9845
                 }
               }
+            },
+            "by_index": {
+              "doc_count_error_upper_bound": 0,
+              "sum_other_doc_count": 1375,
+              "buckets": [
+                {
+                  "key": "devlog-log-banco-java-2026-08-25",
+                  "doc_count": 17672,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 7164
+                      },
+                      "database": {
+                        "doc_count": 3728
+                      },
+                      "timeout": {
+                        "doc_count": 6780
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-mana_4052-main-2026-08-25",
+                  "doc_count": 9743,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 9743
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-mana_4043-2026-08-25",
+                  "doc_count": 9663,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 9663
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-mana_4052-2026-08-25",
+                  "doc_count": 9549,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 9549
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-chapar-hq-lite-4051-2026-08-25",
+                  "doc_count": 8038,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 7438
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 600
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-chapar-hq-banco-4051-2026-08-25",
+                  "doc_count": 7276,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 7276
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-chapar-gateway-lite-4051-2026-08-25",
+                  "doc_count": 5549,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 5549
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-chapar-gateway-banco-4051-2026-08-25",
+                  "doc_count": 5435,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 5435
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-mana_banco_4052-2026-08-25",
+                  "doc_count": 5035,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 5035
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-tosan-security-4052-2026-08-25",
+                  "doc_count": 3289,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 3184
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 105
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-api-gw-banco-4052-2026-08-25",
+                  "doc_count": 2600,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 2600
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-cutoff-lite-4051-2026-08-25",
+                  "doc_count": 2447,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 2444
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-cutoff-banco-des-4051-2026-08-25",
+                  "doc_count": 2420,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 2417
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-cutoff-banco-4051-2026-08-25",
+                  "doc_count": 2384,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 2381
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-gateway-banco-des-4043-2026-08-25",
+                  "doc_count": 2379,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 2379
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-gateway-banco-4051-2026-08-25",
+                  "doc_count": 2372,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 2372
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-gateway-lite-4051-2026-08-25",
+                  "doc_count": 2365,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 2365
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-gateway-lite-des-4043-2026-08-25",
+                  "doc_count": 2304,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 2304
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-gateway-banco-des-4051-2026-08-25",
+                  "doc_count": 2232,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 2232
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-gateway-lite-des-4051-2026-08-25",
+                  "doc_count": 2174,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 2174
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-creditor-banco-des-4043-2026-08-25",
+                  "doc_count": 1845,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1845
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-debtor-lite-des-4051-2026-08-25",
+                  "doc_count": 1839,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1839
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-creditor-lite-des-4043-2026-08-25",
+                  "doc_count": 1837,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1837
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-creditor-lite-des-4051-2026-08-25",
+                  "doc_count": 1821,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1821
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-debtor-banco-des-4051-2026-08-25",
+                  "doc_count": 1817,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1817
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-debtor-lite-4051-2026-08-25",
+                  "doc_count": 1816,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1816
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-creditor-banco-4051-2026-08-25",
+                  "doc_count": 1815,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1815
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-core-gateway-lite-des-4043-2026-08-25",
+                  "doc_count": 1809,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1809
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-creditor-banco-des-4051-2026-08-25",
+                  "doc_count": 1806,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1806
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-debtor-banco-4051-2026-08-25",
+                  "doc_count": 1805,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1805
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-debtor-banco-des-4043-2026-08-25",
+                  "doc_count": 1792,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1792
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-core-gateway-lite-4051-2026-08-25",
+                  "doc_count": 1782,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1782
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-core-gateway-banco-des-4051-2026-08-25",
+                  "doc_count": 1781,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1781
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-creditor-lite-4051-2026-08-25",
+                  "doc_count": 1769,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1769
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-debtor-lite-des-4043-2026-08-25",
+                  "doc_count": 1741,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1740
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-gateway-lite-4043-2026-08-25",
+                  "doc_count": 1692,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1692
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-core-gateway-banco-des-4043-2026-08-25",
+                  "doc_count": 1649,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1649
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-payway-lite-4051-2026-08-25",
+                  "doc_count": 1630,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1626
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-payway-lite-des-4043-2026-08-25",
+                  "doc_count": 1621,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1617
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-payway-banco-4051-2026-08-25",
+                  "doc_count": 1582,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1578
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-payway-banco-des-4051-2026-08-25",
+                  "doc_count": 1576,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1572
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-payway-lite-des-4051-2026-08-25",
+                  "doc_count": 1567,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1563
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-core-gateway-lite-des-4051-2026-08-25",
+                  "doc_count": 1543,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1539
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-payway-banco-des-4043-2026-08-25",
+                  "doc_count": 1502,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1498
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-core-gateway-banco-4051-2026-08-25",
+                  "doc_count": 1453,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1449
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 1
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-debtor-lite-4043-2026-08-25",
+                  "doc_count": 1245,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1245
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-cutoff-banco-des-4043-2026-08-25",
+                  "doc_count": 1184,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1184
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-creditor-lite-4043-2026-08-25",
+                  "doc_count": 1162,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1162
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-cutoff-lite-des-4043-2026-08-25",
+                  "doc_count": 1156,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1156
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-core-gateway-lite-4043-2026-08-25",
+                  "doc_count": 1118,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1118
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-payway-lite-4043-2026-08-25",
+                  "doc_count": 1078,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1075
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pol-cutoff-lite-4043-2026-08-25",
+                  "doc_count": 1049,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1046
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pol-cutoff-lite-des-4051-2026-08-25",
+                  "doc_count": 1031,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 1028
+                      },
+                      "database": {
+                        "doc_count": 3
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-core-tosan-cloud-config-vault-4041-2026-08-25",
+                  "doc_count": 696,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 696
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-pkara-negin-4051-2026-08-25",
+                  "doc_count": 680,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 120
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 560
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-chapar-hq-lite-4043-2026-08-25",
+                  "doc_count": 598,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 0
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 598
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-chapar-hq-lite-4052-2026-08-25",
+                  "doc_count": 598,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 0
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 598
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "devlog-nahab-2026-08-25",
+                  "doc_count": 575,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 575
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "banco-java-log-banco-java-4052-2026-08-25",
+                  "doc_count": 533,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 0
+                      },
+                      "database": {
+                        "doc_count": 527
+                      },
+                      "timeout": {
+                        "doc_count": 6
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-cm-lite-4052-2026-08-25",
+                  "doc_count": 527,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 509
+                      },
+                      "database": {
+                        "doc_count": 446
+                      },
+                      "timeout": {
+                        "doc_count": 18
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-api-gw-lite-4052-2026-08-25",
+                  "doc_count": 520,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 520
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-core-corecustomer-banco-4043-2026-08-25",
+                  "doc_count": 479,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 460
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 38
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-card-kms-4052-2026-08-25",
+                  "doc_count": 477,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 477
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-core-e-stamp-banco-4043-2026-08-25",
+                  "doc_count": 432,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 432
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-core-customer-dev-2026-08-25",
+                  "doc_count": 414,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 395
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 38
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-core-deposit-dev-2026-08-25",
+                  "doc_count": 372,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 353
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 38
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-tosan-inbound-gtw-lite-4043-2026-08-25",
+                  "doc_count": 351,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 351
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-corecustomer-banco-4052-2026-08-25",
+                  "doc_count": 332,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 312
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 40
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-tosan-core-infra-4052-2026-08-25",
+                  "doc_count": 328,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 328
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-core-financial-clarification-banco-4043-2026-08-25",
+                  "doc_count": 324,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 324
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-core-sima-banco-4043-2026-08-25",
+                  "doc_count": 323,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 323
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-kms-dev-2026-08-25",
+                  "doc_count": 322,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 322
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-e-stamp-lite-4052-2026-08-25",
+                  "doc_count": 318,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 318
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-financial-clarification-2026-08-25",
+                  "doc_count": 238,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 176
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 62
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-tosan-inbound-gtw-lite-4052-2026-08-25",
+                  "doc_count": 238,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 238
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-core-api-gw-banco-4043-2026-08-25",
+                  "doc_count": 232,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 232
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-cheque-wrapper-banco-4052-2026-08-25",
+                  "doc_count": 228,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 228
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-bill-statement-lite-4052-2026-08-25",
+                  "doc_count": 215,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 183
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 32
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-sima-banco-4052-2026-08-25",
+                  "doc_count": 170,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 170
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-cm-lite-4051-2026-08-25",
+                  "doc_count": 169,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 169
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-chq-negin-4052-2026-08-25",
+                  "doc_count": 157,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 157
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 5
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-e-stamp-banco-4052-2026-08-25",
+                  "doc_count": 144,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 144
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-cheque-wrapper-dev-2026-08-25",
+                  "doc_count": 137,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 122
+                      },
+                      "database": {
+                        "doc_count": 2
+                      },
+                      "timeout": {
+                        "doc_count": 13
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-financial-clarification-banco-4052-2026-08-25",
+                  "doc_count": 137,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 133
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 4
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-ssm-dev-2026-08-25",
+                  "doc_count": 125,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 125
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-faceet-io-banco-4052-2026-08-25",
+                  "doc_count": 120,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 120
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-faceet-io-banco-4043-2026-08-25",
+                  "doc_count": 118,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 118
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-faceet-io-banco-4051-2026-08-25",
+                  "doc_count": 118,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 118
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-kahroba-lite-4052-2026-08-25",
+                  "doc_count": 115,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 105
+                      },
+                      "database": {
+                        "doc_count": 4
+                      },
+                      "timeout": {
+                        "doc_count": 6
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-paya-base-data-banco-4052-2026-08-25",
+                  "doc_count": 114,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 114
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-card-ssm-negin-4052-2026-08-25",
+                  "doc_count": 109,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 109
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-mahan-electricity-prediction-4052-2026-08-25",
+                  "doc_count": 105,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 93
+                      },
+                      "database": {
+                        "doc_count": 12
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-card-kms-4043-2026-08-25",
+                  "doc_count": 95,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 95
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-paya-base-data-lite-4052-2026-08-25",
+                  "doc_count": 76,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 76
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-chapar-im-lite-4051-2026-08-25",
+                  "doc_count": 58,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 50
+                      },
+                      "database": {
+                        "doc_count": 8
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-chapar-gatifier-lite-4051-2026-08-25",
+                  "doc_count": 54,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 50
+                      },
+                      "database": {
+                        "doc_count": 4
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-loan-origination-banco-4052-2026-08-25",
+                  "doc_count": 52,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 44
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 8
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-chapar-notifier-banco-4051-2026-08-25",
+                  "doc_count": 52,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 50
+                      },
+                      "database": {
+                        "doc_count": 2
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-modern-chapar-notifier-lite-4051-2026-08-25",
+                  "doc_count": 52,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 48
+                      },
+                      "database": {
+                        "doc_count": 4
+                      },
+                      "timeout": {
+                        "doc_count": 0
+                      }
+                    }
+                  }
+                },
+                {
+                  "key": "operationlog-other-pichak-lite-4043-2026-08-25",
+                  "doc_count": 52,
+                  "error_categories": {
+                    "buckets": {
+                      "5xx": {
+                        "doc_count": 0
+                      },
+                      "connection_refused": {
+                        "doc_count": 14
+                      },
+                      "database": {
+                        "doc_count": 0
+                      },
+                      "timeout": {
+                        "doc_count": 38
+                      }
+                    }
+                  }
+                }
+              ]
             }
           }
         }
@@ -135,15 +2167,38 @@
       "main": [
         [
           {
-            "node": "Server side errors",
+            "node": "classify server errors by service",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Server side errors": {
+    "classify server errors by service": {
       "main": [
+        [
+          {
+            "node": "Prepare emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare emails": {
+      "main": [
+        [
+          {
+            "node": "Loop Over emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over emails": {
+      "main": [
+        [],
         [
           {
             "node": "Send a message",
@@ -160,7 +2215,7 @@
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "07e17aa8-d32d-4c43-b3aa-e4cfcb07fa78",
+  "versionId": "1e5998cd-5dfc-40ed-905c-b1bfa6ecf7e0",
   "meta": {
     "instanceId": "d33824797c2d2abd86aa5528de5f08cb0c8746bc72b997241523e7ca4b12b1fc"
   },
